@@ -5,7 +5,7 @@
 
 # variables (usually only "adminmail" and "thispath" needs to be editted)
 adminmail=YOUR@gmail.com
-thispath=/root/badwarefinder
+thispath=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
 reportcurrent=$thispath/reportcurrent
 reportarchive=$thispath/reportarchive
 badphrasses=$thispath/find_badware_incpanels_phrasses
@@ -13,32 +13,38 @@ badphrasses=$thispath/find_badware_incpanels_phrasses
 
 ###################################
 
-# add 15 log entries containing 15 newest cpanels into file
-tail -n 50 /var/cpanel/accounting.log > /tmp/lastcpanels
+# If want to check last 25 cpanel accounts for bad files, then set tail command to list roughly last 50 lines
+tail -n 90 /var/cpanel/accounting.log|grep CREATE > /tmp/lastcpanels
 
-# cpanel account loop
+# discover suspended cpanels
+suspended_cpanels=$(ls -A1 /var/cpanel/suspended)
+
+# cpanel accounts loop
 while read logline;do
-# Add cpanel username and its domains into report for reference
 
-# echo "logline: $logline"
-# echo "logline useronly:"
 cpusr=$(echo "$logline" | tail -c-9)
-#echo $cpusr
+# skip to next user if this one is suspended
+if [[ "$(echo "$suspended_cpanels")" == *"$cpusr"* ]];then
+echo "$cpusr is in /var/cpanel/suspended, so lets skip to next user"
+###### !!!!!!!!!!!!!!!!!!!!!!!!!!!!!! I temporarily disable skipping suspended panels, i need to discover if this script works to detect treats !!!!!!!!## continue
+fi
 
 existdir=$(bash -c '[ -d /usr/local/apache/domlogs/$cpusr/ ] && echo "exist"') 2> /dev/null
-#echo "existdir: $existdir"
-
-# echo "$cpusr exist check done"
 
 if [[ "$existdir" == "exist" ]];then
 echo "$cpusr, $(ls /usr/local/apache/domlogs/$cpusr 2> /dev/null | grep -v / 2> /dev/null)" >> $reportcurrent 2> /dev/null
+else
+echo "$cpusr dir (/usr/local/apache/domlogs/$cpusr) does not exist. Existdir variable is $existdir . Skipping to next user."
+continue
 fi
 
 ## echo "$(echo "$logline" | tail -c-9), $(echo $domlogdirexist)"
 
-# search bad phrasses in cpanel account files
+echo "$cpusr files are examined"
 while read phrasse;do
-/bin/nice -n 19 grep -sRil --include=*.{html,htm,js,php} "$phrasse" /home/$(echo "$logline" | tail -c-9)/public_html >> $reportcurrent
+/bin/nice -n 19 find /home/$(echo "$logline" | tail -c-9)/public_html -size -1000k -mmin -1440 -name "*.htm*" -o -name "*.js" -o -name "*.php" ! -name "*continents-cities*" -exec grep -Fl "$phrasse" {} \; 2>/dev/null >> $reportcurrent
+# size k kilobytes # mmin modiffied last n minutes 1440 = 24h
+# /bin/nice -n 19 grep -Ril --include=*.{html,htm,js,php} "$phrasse" /home/$(echo "$logline" | tail -c-9)/public_html >> $reportcurrent
 done < $badphrasses
 
 done < /tmp/lastcpanels
@@ -50,10 +56,12 @@ cat $reportcurrent | grep public_html >> $reportarchive
 
 # report results via email
 if [ "$(echo $newfilesonly | grep public_html | wc -l)" -gt "0" ];then
-echo "Some suspicious files found at $(hostname):
-$(cat $reportcurrent)
+echo -e "Some suspicious files found at $(hostname) by $thispath:
+$newfilesonly
 
-The file/s that was not yet reported are:
-$newfilesonly" | mail -s "Suspicious files hosted on $(hostname)" $adminmail
+Files reported in the past:
+$(cat $reportcurrent)
+" | mail -s "Suspicious files hosted on $(hostname)" $adminmail
 fi
+
 # this is the end
